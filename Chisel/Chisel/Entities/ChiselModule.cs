@@ -16,12 +16,28 @@
 #endregion
 using System;
 using System.Collections.Generic;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Chisel.Entities
 {
     public abstract class ChiselModule
     {
+        public abstract IEnumerable<string> Targets { get; }
 
+        public string BaseUrl { get; protected set; } 
+            = string.Empty;
+
+        public Dictionary<string, string> Headers { get; } 
+            = new Dictionary<string, string>();
+
+        public int Backoff { get; protected set; } = 1000;
+
+        public virtual Task Init(IServiceProvider provider)
+        {
+            // Left blank for optional client implementation.
+            return Task.CompletedTask;
+        }
     }
 }
