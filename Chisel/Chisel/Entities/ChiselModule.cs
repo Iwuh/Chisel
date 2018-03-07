@@ -45,7 +45,7 @@ namespace Chisel.Entities
             = new Dictionary<string, IEnumerable<string>>();
 
         /// <summary>
-        /// The minimum time to wait between consecutive requests.
+        /// The minimum number of milliseconds to wait between consecutive requests.
         /// </summary>
         public int Backoff { get; protected set; } = 1000;
 
