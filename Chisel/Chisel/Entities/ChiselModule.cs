@@ -47,7 +47,7 @@ namespace Chisel.Entities
         /// <summary>
         /// The minimum number of milliseconds to wait between consecutive requests.
         /// </summary>
-        public int Backoff { get; protected set; } = 1000;
+        public int Backoff { get; } = 1000;
 
         /// <summary>
         /// Can optionally be overriden to execute code after module creation, before scraping.
