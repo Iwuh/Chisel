@@ -16,6 +16,7 @@
 #endregion
 using Chisel.Entities;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -31,19 +32,22 @@ namespace Chisel
         private ILogger _logger;
         private HttpClient _client;
         private List<Type> _seriesModules;
+        private uint _retries;
 
-        public ChiselScraper(ILoggerFactory loggerFactory, double timeout = 100000)
+        public ChiselScraper(ILoggerFactory loggerFactory = null, uint retries = 3)
         {
             _seriesModules = new List<Type>();
             _client = new HttpClient();
-            _logger = loggerFactory.CreateLogger<ChiselScraper>();
-            Timeout = timeout;
+            _logger = loggerFactory?.CreateLogger<ChiselScraper>() ?? CreateNullLogger();
+
+            Timeout = TimeSpan.FromSeconds(100);
+            _retries = retries;
         }
 
-        public double Timeout
+        public TimeSpan Timeout
         {
-            get => _client.Timeout.TotalMilliseconds;
-            set => _client.Timeout = TimeSpan.FromMilliseconds(value);
+            get => _client.Timeout;
+            set => _client.Timeout = value;
         }
 
         public void AddSeriesModules(params Type[] modules)
@@ -63,7 +67,7 @@ namespace Chisel
         {
             foreach (var type in _seriesModules)
             {
-                await ExecuteModule(type, provider);
+                await ExecuteModule(type, provider).ConfigureAwait(false);
             }
         }
 
@@ -103,26 +107,33 @@ namespace Chisel
                         await Task.Delay((int)(module.Backoff - timeDifference.TotalMilliseconds)).ConfigureAwait(false);
                     }
                 }
+
+                await module.AfterScraping(true).ConfigureAwait(false);
             }
             catch (TaskCanceledException ex)
             {
                 _logger.LogError(ex, "Module {0} timed out while retrieving a target.", type);
+                await HandleFailure(module, ex).ConfigureAwait(false);
             }
             catch (HttpRequestException ex)
             {
                 _logger.LogError(ex, "Module {0} encountered an exception while retrieving a target.", type);
+                await HandleFailure(module, ex).ConfigureAwait(false);
             }
             finally
             {
-                _logger.LogDebug("Cleaning up module {0}", type);
-                await module.AfterScraping().ConfigureAwait(false);
-
                 // If the module implements IDisposable, dispose it.
                 if (module != null && module is IDisposable disposable)
                 {
                     disposable.Dispose();
                 }
             }
+        }
+
+        private async Task HandleFailure(ChiselModule module, Exception ex)
+        {
+            _logger.LogDebug("Cleaning up module {0}", module.GetType());
+            await module.AfterScraping(false, ex).ConfigureAwait(false);
         }
 
         private bool IsValidChiselModule(Type type, out string error)
@@ -140,6 +151,14 @@ namespace Chisel
 
             error = string.Empty;
             return true;
+        }
+
+        private ILogger CreateNullLogger()
+        {
+            using (var factory = new NullLoggerFactory())
+            {
+                return factory.CreateLogger<ChiselModule>();
+            }
         }
     }
 }

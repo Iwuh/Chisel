@@ -45,9 +45,9 @@ namespace Chisel.Entities
             = new Dictionary<string, IEnumerable<string>>();
 
         /// <summary>
-        /// The minimum number of milliseconds to wait between consecutive requests.
+        /// The minimum number of seconds to wait between consecutive requests.
         /// </summary>
-        public int Backoff { get; } = 1000;
+        public double Backoff { get; } = 2.0;
 
         /// <summary>
         /// Can optionally be overriden to execute code after module creation, before scraping.
@@ -68,7 +68,9 @@ namespace Chisel.Entities
         /// <summary>
         /// Can optionally be overriden to execute code after scraping has finished.
         /// </summary>
-        public virtual Task AfterScraping()
+        /// <param name="success">Whether the module finished scraping succesfully or failed due to an error.</param>
+        /// <param name="ex">The exception that caused the module to fail, if there was one.</param>
+        public virtual Task AfterScraping(bool success, Exception ex = null)
         {
             // Left blank for optional client implementation.
             return Task.CompletedTask;
