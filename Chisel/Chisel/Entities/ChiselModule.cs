@@ -33,21 +33,9 @@ namespace Chisel.Entities
         public abstract IEnumerable<string> Targets { get; }
 
         /// <summary>
-        /// The base URL (empty by default) that each target should be appended to.
+        /// An instance of <see cref="ChiselModuleSettings"/> containing per-module settings.
         /// </summary>
-        public string BaseUrl { get; protected set; } 
-            = string.Empty;
-
-        /// <summary>
-        /// The headers to use when sending requests.
-        /// </summary>
-        public Dictionary<string, IEnumerable<string>> Headers { get; } 
-            = new Dictionary<string, IEnumerable<string>>();
-
-        /// <summary>
-        /// The minimum number of seconds to wait between consecutive requests.
-        /// </summary>
-        public double Backoff { get; } = 2.0;
+        public ChiselModuleSettings Settings { get; protected set; }
 
         /// <summary>
         /// Can optionally be overriden to execute code after module creation, before scraping.

@@ -102,9 +102,9 @@ namespace Chisel
 
                     // Wait until the minimum time has passed since the request, if necessary.
                     var timeDifference = DateTime.Now - lastRequest;
-                    if (timeDifference.TotalMilliseconds < module.Backoff)
+                    if (timeDifference.TotalSeconds < module.Settings.MinBackoff)
                     {
-                        await Task.Delay((int)(module.Backoff - timeDifference.TotalMilliseconds)).ConfigureAwait(false);
+                        await Task.Delay(TimeSpan.FromSeconds(module.Settings.MinBackoff) - timeDifference).ConfigureAwait(false);
                     }
                 }
 
