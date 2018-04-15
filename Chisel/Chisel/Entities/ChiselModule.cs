@@ -54,11 +54,19 @@ namespace Chisel.Entities
         public abstract Task Handle(ChiselResponse response);
 
         /// <summary>
-        /// Can optionally be overriden to execute code after scraping has finished.
+        /// Can optionally be overriden to execute code after the module has finished scraping all targets successfully.
         /// </summary>
-        /// <param name="success">Whether the module finished scraping succesfully or failed due to an error.</param>
-        /// <param name="ex">The exception that caused the module to fail, if there was one.</param>
-        public virtual Task AfterScraping(bool success, Exception ex = null)
+        public virtual Task AfterSuccess()
+        {
+            // Left blank for optional client implementation.
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Can optionally be overriden to execute code after the module halted execution due to a failed target.
+        /// </summary>
+        /// <param name="ex">The exception that caused module execution to fail.</param>
+        public virtual Task AfterFailure(Exception ex)
         {
             // Left blank for optional client implementation.
             return Task.CompletedTask;

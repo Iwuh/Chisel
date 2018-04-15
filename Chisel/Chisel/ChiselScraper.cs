@@ -18,6 +18,7 @@ using Chisel.Entities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -27,27 +28,49 @@ using System.Threading.Tasks;
 
 namespace Chisel
 {
-    public class ChiselScraper
+    public sealed class ChiselScraper : IDisposable
     {
+        private ILoggerFactory _loggerFactory;
         private ILogger _logger;
+
         private HttpClient _client;
-        private List<Type> _seriesModules;
+        private ConcurrentQueue<Type> _seriesModules;
         private uint _retries;
 
-        public ChiselScraper(ILoggerFactory loggerFactory = null, uint retries = 3)
+        private volatile bool _disposed;
+        private volatile bool _running;
+        private object _runningLock = new object();
+
+        public ChiselScraper(ILoggerFactory loggerFactory = null)
         {
-            _seriesModules = new List<Type>();
+            _seriesModules = new ConcurrentQueue<Type>();
             _client = new HttpClient();
-            _logger = loggerFactory?.CreateLogger<ChiselScraper>() ?? CreateNullLogger();
+
+            _loggerFactory = loggerFactory ?? new NullLoggerFactory();
+            _logger = _loggerFactory.CreateLogger<ChiselScraper>();
 
             Timeout = TimeSpan.FromSeconds(100);
-            _retries = retries;
+            Retries = 3;
         }
 
         public TimeSpan Timeout
         {
             get => _client.Timeout;
-            set => _client.Timeout = value;
+            set
+            {
+                ThrowIfDisposedOrStarted();
+                _client.Timeout = value;
+            }
+        }
+
+        public uint Retries
+        {
+            get => _retries;
+            set
+            {
+                ThrowIfDisposedOrStarted();
+                _retries = value;
+            }
         }
 
         public void AddSeriesModules(params Type[] modules)
@@ -58,42 +81,50 @@ namespace Chisel
                 {
                     throw new ArgumentException(errorMessage);                    
                 }
-                _seriesModules.Add(type);
+                _seriesModules.Enqueue(type);
                 _logger.LogInformation("Queued module {0} in series", type);
             }
         }
 
-        public async Task StartAsync(IServiceProvider provider)
+        public async Task StartAsync(IServiceProvider provider, CancellationToken cancellationToken)
         {
-            foreach (var type in _seriesModules)
+            ThrowIfDisposedOrStarted();
+            cancellationToken.Register(() => _running = false);
+
+            _logger.LogInformation("Starting to process {0} modules ({1} series, {2} parallel)"); // TODO: Module count
+            while (_seriesModules.TryDequeue(out Type type))
             {
-                await ExecuteModule(type, provider).ConfigureAwait(false);
+                await ExecuteModule(type, provider, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        private async Task ExecuteModule(Type type, IServiceProvider provider)
+        private async Task ExecuteModule(Type type, IServiceProvider provider, CancellationToken token)
         {
-            _logger.LogDebug("Processing module {0}", type);
+            var moduleLogger = _loggerFactory.CreateLogger(type);
 
-            _logger.LogDebug("Attempting to create instance of module {0}", type);
+            moduleLogger.LogInformation("Processing module {0}", type);
+
+            moduleLogger.LogDebug("Attempting to create instance of module {0}", type);
             // Create an instance of the type using its public parameterless constructor.
             var module = Activator.CreateInstance(type) as ChiselModule;
 
             // Allow the module to set up, scrape its targets, then allow it to clean up.
-            _logger.LogDebug("Initializing module {0}", type);
+            moduleLogger.LogDebug("Initializing module {0}", type);
             await module.Init(provider).ConfigureAwait(false);
 
             try
             {
                 DateTime lastRequest;
-                foreach (var url in module.Targets.Select(t => $"{module.BaseUrl}/{t}"))
+                foreach (var url in module.Targets.Select(t => $"{module.Settings.BaseUrl}/{t}"))
                 {
-                    // Create a new message for this request and update the headers.
-                    var request = new HttpRequestMessage(HttpMethod.Get, url).UpdateHeaders(module.Headers);
+                    token.ThrowIfCancellationRequested();
 
-                    _logger.LogTrace("Getting target {0}", url);
+                    // Create a new message for this request and update the headers.
+                    var request = new HttpRequestMessage(HttpMethod.Get, url).UpdateHeaders(module.Settings.Headers);
+
+                    moduleLogger.LogTrace("Getting target {0}", url);
                     // Send the request and update the time of the last request.
-                    var httpResponse = await _client.SendAsync(request).ConfigureAwait(false);
+                    var httpResponse = await _client.SendAsync(request, token).ConfigureAwait(false);
                     lastRequest = DateTime.Now;
 
                     // Extract the response into a ChiselResponse and pass it to the module's handle method.
@@ -108,17 +139,17 @@ namespace Chisel
                     }
                 }
 
-                await module.AfterScraping(true).ConfigureAwait(false);
+                await module.AfterSuccess().ConfigureAwait(false);
             }
             catch (TaskCanceledException ex)
             {
-                _logger.LogError(ex, "Module {0} timed out while retrieving a target.", type);
-                await HandleFailure(module, ex).ConfigureAwait(false);
+                moduleLogger.LogError(ex, "Module {0} timed out or was cancelled while retrieving a target.", type);
+                await module.AfterFailure(ex).ConfigureAwait(false);
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogError(ex, "Module {0} encountered an exception while retrieving a target.", type);
-                await HandleFailure(module, ex).ConfigureAwait(false);
+                moduleLogger.LogError(ex, "Module {0} encountered an exception while retrieving a target.", type);
+                await module.AfterFailure(ex).ConfigureAwait(false);
             }
             finally
             {
@@ -128,12 +159,6 @@ namespace Chisel
                     disposable.Dispose();
                 }
             }
-        }
-
-        private async Task HandleFailure(ChiselModule module, Exception ex)
-        {
-            _logger.LogDebug("Cleaning up module {0}", module.GetType());
-            await module.AfterScraping(false, ex).ConfigureAwait(false);
         }
 
         private bool IsValidChiselModule(Type type, out string error)
@@ -153,11 +178,38 @@ namespace Chisel
             return true;
         }
 
-        private ILogger CreateNullLogger()
+        public void Dispose()
         {
-            using (var factory = new NullLoggerFactory())
+            ThrowIfDisposedOrStarted();
+
+            _client.Dispose();
+            _loggerFactory.Dispose();
+            _disposed = true;
+        }
+
+        private void SetRunning(bool state)
+        {
+            lock (_runningLock)
             {
-                return factory.CreateLogger<ChiselModule>();
+                _running = state;
+            }
+        }
+
+        private void ThrowIfDisposedOrStarted()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(ChiselScraper), "Scraper has already been disposed.");
+            }
+            else
+            {
+                lock (_runningLock)
+                {
+                    if (_running)
+                    {
+                        throw new InvalidOperationException("Cannot perform operation while scraper is running.");
+                    }
+                }
             }
         }
     }
